@@ -47,21 +47,14 @@ async function getBalance(address: Address | undefined): Promise<bigint> {
   }
 }
 
-async function getEnsAvatar(ensName: string) {
+async function getEnsAvatar(ensName: string): Promise<string | undefined> {
   const url = `https://metadata.ens.domains/mainnet/avatar/${ensName}`;
   try {
     const response = await fetch(url);
-    if (!response.ok) throw new Error("Failed to fetch ENS avatar");
-    const contentType = response.headers.get("content-type");
-    if (contentType && contentType.startsWith("image")) {
-      return url;
-    } else {
-      const data = await response.json();
-      if (data.message === "There is no avatar set under given address") {
-        throw new Error("No ENS avatar");
-      }
-      return url;
+    if (!response.ok) {
+      throw new Error("Failed to fetch ENS avatar");
     }
+    return url;
   } catch (error) {
     console.error("Error fetching ENS avatar:", error);
     return undefined;
@@ -71,11 +64,12 @@ async function getEnsAvatar(ensName: string) {
 export default async function handler(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
+
     if (!searchParams.has("addyOrEns")) {
       return new Response("Missing 'addyOrEns' query parameter", { status: 400 });
     }
-    const addyOrEns = searchParams.get("addyOrEns")?.slice(0, 100) || "blank";
 
+    const addyOrEns = searchParams.get("addyOrEns")?.slice(0, 100) || "blank";
     let address: string | undefined = addyOrEns;
     let ensName: string | undefined;
     let balance = 0n;
@@ -83,15 +77,19 @@ export default async function handler(request: NextRequest) {
 
     if (/\..+$/.test(addyOrEns)) {
       address = await resolveEnsToAddress(addyOrEns);
+
       if (address) {
-        ensName = await getEnsNameForAddress(address as Address);
-        balance = await getBalance(address as Address);
-        avatarUrl = await getEnsAvatar(ensName as string);
+        [ensName, balance] = await Promise.all([
+          getEnsNameForAddress(address as Address),
+          getBalance(address as Address),
+        ]);
+
+        avatarUrl = await getEnsAvatar(addyOrEns).catch(() => undefined);
       }
     } else if (isAddress(addyOrEns)) {
-      ensName = await getEnsNameForAddress(addyOrEns);
-      balance = await getBalance(addyOrEns);
-      avatarUrl = await getEnsAvatar(ensName || addyOrEns);
+      [ensName, balance] = await Promise.all([getEnsNameForAddress(addyOrEns), getBalance(addyOrEns)]);
+
+      avatarUrl = await getEnsAvatar(addyOrEns).catch(() => undefined);
     }
 
     if (!avatarUrl) {
