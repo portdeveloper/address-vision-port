@@ -56,41 +56,37 @@ export default async function handler(request: NextRequest) {
     }
 
     const addyOrEns = searchParams.get("addyOrEns")?.slice(0, 100) || "blank";
+    const isAddressValid = isAddress(addyOrEns as string);
+    const isEnsValid = /\.(eth|xyz)$/.test(addyOrEns as string);
+
+    if (!isAddressValid && !isEnsValid) {
+      return new Response("Invalid address or ENS", { status: 400 });
+    }
+
     let resolvedAddress: Address | null = null;
     let resolvedEnsName: string | null = null;
     let balance: string | null = null;
 
-    const paramAsAddress = isAddress(addyOrEns as string) ? addyOrEns : null;
-    let paramAsEns = /\.(eth|xyz)$/.test(addyOrEns as string) ? addyOrEns : null;
+    const [addressPromise, ensNamePromise, balancePromise] = [
+      isEnsValid ? resolveEnsToAddress(addyOrEns as string) : Promise.resolve(addyOrEns as Address),
+      isAddressValid ? resolveAddressToEns(addyOrEns as Address) : Promise.resolve(null),
+      isAddressValid ? fetchBalance(addyOrEns as Address) : Promise.resolve(null),
+    ];
 
-    if (paramAsEns) {
-      resolvedAddress = await resolveEnsToAddress(paramAsEns as string);
-      if (!resolvedAddress) {
-        return new Response("ENS name not found", { status: 404 });
-      }
-      balance = await fetchBalance(resolvedAddress);
-    } else if (paramAsAddress) {
-      resolvedAddress = paramAsAddress as Address;
-      resolvedEnsName = await resolveAddressToEns(paramAsAddress as Address);
-      paramAsEns = resolvedEnsName;
-      balance = await fetchBalance(paramAsAddress as Address);
+    [resolvedAddress, resolvedEnsName, balance] = await Promise.all([addressPromise, ensNamePromise, balancePromise]);
+
+    if (!resolvedAddress) {
+      return new Response("ENS name or address not found", { status: 404 });
     }
 
-    let avatarUrl;
+    const avatarUrl = isEnsValid
+      ? (await fetch(`https://ensdata.net/media/avatar/${addyOrEns}`)).ok
+        ? `https://ensdata.net/media/avatar/${addyOrEns}`
+        : blo(resolvedAddress)
+      : blo(resolvedAddress);
 
-    if (paramAsEns) {
-      const avatarApiResponse = await fetch(`https://ensdata.net/media/avatar/${paramAsEns}`);
-      if (avatarApiResponse.ok) {
-        avatarUrl = `https://ensdata.net/media/avatar/${paramAsEns}`;
-      } else {
-        avatarUrl = blo(resolvedAddress as Address);
-      }
-    } else {
-      avatarUrl = blo(resolvedAddress as Address);
-    }
-
-    const croppedAddresses = (resolvedAddress || "").slice(0, 6) + "..." + (resolvedAddress || "").slice(-4);
-    const displayName = resolvedEnsName || paramAsEns || croppedAddresses;
+    const croppedAddresses = `${resolvedAddress.slice(0, 6)}...${resolvedAddress.slice(-4)}`;
+    const displayName = resolvedEnsName || addyOrEns || croppedAddresses;
 
     return new ImageResponse(
       (
@@ -98,22 +94,18 @@ export default async function handler(request: NextRequest) {
           <div style={{ display: "flex" }} tw="flex-col flex-grow">
             <div style={{ display: "flex" }} tw="max-h-[125px] font-bold bg-white p-4 pt-6 items-center flex-grow">
               <strong tw="text-6xl">👀 address.vision</strong>
-              <div tw="ml-12 text-4xl bg-blue-50 p-4 px-6 rounded-full border border-slate-300 ">{displayName}</div>
+              <div tw="ml-12 text-4xl bg-blue-50 p-4 px-6 rounded-full border border-slate-300">{displayName}</div>
             </div>
             <div tw="flex bg-blue-50 flex-grow justify-between pt-6 pl-10">
               <div tw="flex flex-col">
                 <div tw="flex">
-                  <div tw="bg-white text-4xl m-8 p-8 h-[400px] rounded-16 shadow-2xl flex items-center justify-between ">
+                  <div tw="bg-white text-4xl m-8 p-8 h-[400px] rounded-16 shadow-2xl flex items-center justify-between">
                     <img
                       src={avatarUrl}
                       width={200}
                       height={200}
                       tw="rounded-full"
-                      style={{
-                        objectFit: "cover",
-                        height: `200px`,
-                        width: `200px`,
-                      }}
+                      style={{ objectFit: "cover", height: `200px`, width: `200px` }}
                       alt="ENS Avatar"
                     />
                     <div tw="flex flex-col ml-8">
@@ -121,7 +113,7 @@ export default async function handler(request: NextRequest) {
                       <span tw="mt-2">Balance: {Number(balance).toFixed(4)} ETH</span>
                     </div>
                   </div>
-                  <div tw="bg-white text-4xl m-8 ml-0 p-8 h-[400px] rounded-16 shadow-2xl flex items-center justify-between ">
+                  <div tw="bg-white text-4xl m-8 ml-0 p-8 h-[400px] rounded-16 shadow-2xl flex items-center justify-between">
                     <img
                       src={`https://api.qrserver.com/v1/create-qr-code/?size=330x330&data=${
                         resolvedAddress || addyOrEns
@@ -140,12 +132,13 @@ export default async function handler(request: NextRequest) {
       {
         width: 1200,
         height: 630,
+        headers: {
+          "cache-control": "max-age=86400",
+        },
       },
     );
   } catch (e: any) {
     console.log(`${e.message}`);
-    return new Response(`Failed to generate the image`, {
-      status: 500,
-    });
+    return new Response("Failed to generate the image", { status: 500 });
   }
 }
